@@ -114,7 +114,7 @@ BullMQ needs `maxRetriesPerRequest: null`, which this codebase already sets. Ups
 | `ML_SERVICE_API_KEY` | same value as `INTERNAL_API_KEY` above |
 | `ADMIN_SEED_PASSWORD` | chosen |
 | `ANALYST_SEED_PASSWORD` | chosen |
-| `ALLOWED_ORIGIN` | *leave blank for now — step 6 fills it* |
+| `ALLOWED_ORIGIN` | `https://transactguard.vercel.app` — see below |
 
 `RUN_WORKER_INLINE=true` is already set in `render.yaml` — Render will not prompt for it.
 
@@ -122,7 +122,11 @@ BullMQ needs `maxRetriesPerRequest: null`, which this codebase already sets. Ups
 
 > `ML_SERVICE_URL` is wired automatically by `render.yaml` via `fromService`, so you never type the ML service's URL.
 
-> **The API will fail to start until `ALLOWED_ORIGIN` is set.** That is deliberate — it refuses to run in production with an open CORS policy. It will come up at the end of step 6.
+> **`ALLOWED_ORIGIN` must be non-empty or the API exits on boot.** That is deliberate — it refuses to run in production with an open CORS policy. Do not leave it blank here and plan to fill it in later: the deploy will fail outright. Vercel URLs are predictable (`https://<project-name>.vercel.app`), so put your intended one in now and correct it in step 6 if Vercel assigns a different name. It accepts a comma-separated list, so you can also list several:
+>
+> ```
+> ALLOWED_ORIGIN=https://transactguard.vercel.app,https://transactguard-ayush.vercel.app
+> ```
 
 Note the API's URL: `https://transactguard-api.onrender.com`.
 
@@ -168,13 +172,13 @@ Then score them from the deployed app: sign in as admin → **Batch jobs → New
 
 5. **Deploy.** Note your URL: `https://transactguard.vercel.app`.
 
-**Now close the loop:** go back to Render → **transactguard-api** → Environment → set
+**Now close the loop:** if Vercel gave you a different URL than the one you guessed in step 4, go back to Render → **transactguard-api** → Environment and correct
 
 ```
-ALLOWED_ORIGIN = https://transactguard.vercel.app
+ALLOWED_ORIGIN = https://<your-actual-vercel-url>
 ```
 
-Save. Render redeploys, and the API starts.
+Save; Render redeploys. If you guessed right in step 4, there is nothing to do here.
 
 > `VITE_API_URL` is baked in at **build** time, not read at runtime. Change it and you must redeploy the frontend.
 
@@ -237,9 +241,13 @@ npm run worker   # the BullMQ consumer, separate process, concurrency 5
 
 **Build fails: `prisma: not found` / `npx` tries to download prisma** — `NODE_ENV=production` makes npm set `omit=dev`, so `npm ci` skips devDependencies. The Prisma CLI is needed by the build, so it lives in `dependencies`, not `devDependencies`. If you moved it, move it back.
 
-**API deploy fails: `ALLOWED_ORIGIN is not set`** — expected before step 6. Set it to your Vercel URL.
+**API deploy fails: `ALLOWED_ORIGIN is not set while NODE_ENV=production`** — you left it blank in step 4. It must be non-empty at boot; guess the Vercel URL and correct it later rather than leaving it empty.
+
+**API deploy fails: `Invalid environment configuration:` followed by a list** — Zod validates the whole environment before anything starts, and the lines after that message name the exact variables. A `sync: false` variable you skipped in the Blueprint prompt arrives as an empty string, which fails validation just like a missing one.
 
 **API fails: `JWT_SECRET and JWT_REFRESH_SECRET must be different`** — you pasted the same value twice.
+
+**API deploy fails on the health check, but the logs show it listening** — `/api/v1/health` returns **503** when Postgres or Redis is unreachable, and Render treats a non-2xx health check as a failed deploy. Open the URL directly: the JSON names which one is down. Usual causes are a Supabase direct connection string instead of the Session pooler, or a `redis://` Upstash URL where it must be `rediss://` (TLS).
 
 **Frontend loads, every request fails with CORS** — `ALLOWED_ORIGIN` does not exactly match the browser's origin. It must include the scheme and no trailing slash.
 
