@@ -63,15 +63,27 @@ git push -u origin main
 3. **Settings → Database → Connection string → URI.** Copy it.
 4. Replace `[YOUR-PASSWORD]` with the password from step 1.
 
-> Use the **Session pooler** connection string (port `6543`) rather than the direct one. Render's free tier recycles connections aggressively and the pooler handles that; the direct connection will exhaust its limit.
+Supabase offers the same database on three ports, and **this project needs two of them for different jobs**:
 
-Append `?pgbouncer=true&connection_limit=1` to the pooled URL so Prisma does not open a pool behind a pooler:
+| Connection | Host / port | Mode | Used for |
+| --- | --- | --- | --- |
+| **Transaction pooler** | `…pooler.supabase.com:6543` | transaction | the running app (Render) |
+| **Session pooler** | `…pooler.supabase.com:5432` | session | migrations and seeding (your laptop) |
+| Direct | `db.<ref>.supabase.co:5432` | session | not used — IPv6-only on new projects |
+
+**For Render**, take the *transaction* pooler URL and append `?pgbouncer=true&connection_limit=1`, so Prisma does not open its own pool behind a pooler and does not use prepared statements the pooler cannot track:
 
 ```
 postgresql://postgres.abcdefgh:PASSWORD@aws-0-eu-west-2.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
 ```
 
-**→ This is `DATABASE_URL`.**
+**→ This is `DATABASE_URL`** on the Render service.
+
+**For migrations**, keep the *session* pooler URL (port `5432`, **no** `pgbouncer` parameter) to one side — step 5 needs it. Prisma Migrate takes a Postgres advisory lock and holds it across statements, which a transaction-mode pooler cannot guarantee you the same backend for, so running `migrate deploy` against port 6543 fails or hangs.
+
+```
+postgresql://postgres.abcdefgh:PASSWORD@aws-0-eu-west-2.pooler.supabase.com:5432/postgres
+```
 
 ---
 
@@ -134,28 +146,57 @@ Note the API's URL: `https://transactguard-api.onrender.com`.
 
 ## 5 · Migrate and seed production
 
-Run once, from your machine, against the production database:
+**Run this from your own machine, not from Render's Shell.** Render's shell is a paid-instance feature, so on the free plan it is not available at all — but even where it is, your laptop is the right place: the Prisma CLI needs the *session* pooler URL rather than the transaction-pooler URL the service runs on, and the seed needs the admin passwords, which the API never reads at runtime and should not carry.
+
+Use the **session pooler** URL from step 2 (port `5432`, no `pgbouncer` parameter). Export it once so it cannot drift between the two commands:
 
 ```bash
 cd backend
-DATABASE_URL="<your Supabase URL>" npx prisma migrate deploy
-DATABASE_URL="<your Supabase URL>" \
+export MIGRATE_URL="postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres"
+```
+
+Confirm you are pointed at Supabase and not at local Docker — this reads the database but changes nothing:
+
+```bash
+DATABASE_URL="$MIGRATE_URL" npx prisma migrate status
+```
+
+It should name the Supabase host and report 4 migrations found. Then apply them:
+
+```bash
+DATABASE_URL="$MIGRATE_URL" npx prisma migrate deploy
+```
+
+`migrate deploy` applies committed migrations without prompting and never resets — the production-safe counterpart to `migrate dev`.
+
+Now the accounts. Choose the passwords first; the seed refuses to run without them, and there is no fallback:
+
+```bash
+DATABASE_URL="$MIGRATE_URL" \
   ADMIN_SEED_PASSWORD="<chosen>" \
   ANALYST_SEED_PASSWORD="<chosen>" \
   NODE_ENV=production \
   npx prisma db seed
 ```
 
-`migrate deploy` applies committed migrations without prompting — the production-safe counterpart to `migrate dev`.
+The seed upserts, so re-running it is safe and resets those accounts' passwords to whatever you pass. It prints the demo VIEWER password in full (public by design) and masks the privileged ones.
 
-**Optional — transaction data.** The full PaySim seed writes ~50,000 rows and will be slow over the network and may exceed Supabase's free 500 MB. Start smaller:
+**Optional — transaction data.** The full PaySim seed writes ~50,000 rows, is slow over the network, and may approach Supabase's free 500 MB. Start smaller:
 
 ```bash
-DATABASE_URL="<your Supabase URL>" node prisma/seedTransactions.js --target 5000
-DATABASE_URL="<your Supabase URL>" node prisma/seedGeography.js
+DATABASE_URL="$MIGRATE_URL" node prisma/seedTransactions.js --target 5000
+DATABASE_URL="$MIGRATE_URL" node prisma/seedGeography.js
 ```
 
 Then score them from the deployed app: sign in as admin → **Batch jobs → New job**.
+
+Finally, clear the shell history entry holding the URL and passwords, since both are now in it:
+
+```bash
+unset MIGRATE_URL
+```
+
+> **After seeding, delete `ADMIN_SEED_PASSWORD` and `ANALYST_SEED_PASSWORD` from the Render service.** They are not in the API's runtime environment schema — it never reads them — so removing them costs nothing and takes two live secrets out of the service.
 
 ---
 
@@ -255,7 +296,11 @@ npm run worker   # the BullMQ consumer, separate process, concurrency 5
 
 **Login works, live feed never connects** — check `ALLOWED_ORIGIN` on the API. Socket.IO uses the same allow-list, and it starts on HTTP polling before upgrading, so a proxy that blocks the upgrade degrades rather than fails.
 
-**`prisma migrate deploy` hangs** — you are using the direct connection string. Switch to the Session pooler (port 6543).
+**`prisma migrate deploy` hangs, or errors with `prepared statement "s0" already exists`** — you are running it against the *transaction* pooler (port 6543). Migrations need session mode: use port 5432 on the pooler host, with no `pgbouncer=true`.
+
+**`migrate status` names `localhost` instead of Supabase** — the inline `DATABASE_URL` did not reach the CLI. `dotenv` never overrides a variable already in the environment, so the prefix form does win; check for a typo in `$MIGRATE_URL` or a stray `export DATABASE_URL` in your shell profile.
+
+**`P1001: Can't reach database server`** — most often the direct URL (`db.<ref>.supabase.co`), which is IPv6-only on new Supabase projects. Use the pooler host.
 
 **502 from Render** — the service is waking. Wait 60 seconds.
 
