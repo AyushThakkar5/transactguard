@@ -1,0 +1,209 @@
+// TransactGuard — data model
+//
+// All six models are defined upfront so the schema documents the whole system,
+// even though only User and AuditLog are exercised by the auth module today.
+//
+// Convention: Prisma fields are camelCase (idiomatic in JS), mapped to the
+// snake_case column and table names via @map / @@map.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7 no longer accepts `url` here — the connection string is supplied by
+// prisma.config.js for CLI commands (migrate/seed) and by the PrismaPg driver
+// adapter in src/config/db.js at runtime.
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  ANALYST
+  VIEWER
+}
+
+enum CaseStatus {
+  UNDER_REVIEW
+  CONFIRMED_FRAUD
+  FALSE_POSITIVE
+}
+
+/// Lifecycle of a batch scoring run.
+///
+/// Every path out of PROCESSING is terminal, so a job can never be left
+/// indefinitely in flight — an ML outage that exhausts every chunk's retries
+/// still lands the job in FAILED rather than stalling in PROCESSING forever.
+enum BatchJobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  PARTIALLY_COMPLETED
+  FAILED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  role         Role     @default(ANALYST)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  uploadedTransactions Transaction[] @relation("TransactionUploadedBy")
+  assignedCases        Case[]        @relation("CaseAssignedTo")
+  batchJobs            BatchJob[]    @relation("BatchJobCreatedBy")
+  auditLogs            AuditLog[]
+
+  @@map("users")
+}
+
+model Transaction {
+  id                String    @id @default(uuid())
+  txnId             String    @unique @map("txn_id")
+  txnType           String    @map("txn_type")
+  amount            Decimal   @db.Decimal(18, 2)
+  currency          String    @default("USD")
+  senderId          String    @map("sender_id")
+  receiverId        String    @map("receiver_id")
+  merchantCategory  String?   @map("merchant_category")
+  origBalanceBefore Decimal?  @map("orig_balance_before") @db.Decimal(18, 2)
+  origBalanceAfter  Decimal?  @map("orig_balance_after") @db.Decimal(18, 2)
+  destBalanceBefore Decimal?  @map("dest_balance_before") @db.Decimal(18, 2)
+  destBalanceAfter  Decimal?  @map("dest_balance_after") @db.Decimal(18, 2)
+  txnTimestamp      DateTime  @map("txn_timestamp")
+  location          String?
+  deviceId          String?   @map("device_id")
+  // Soft delete: rows are never hard-deleted, queries filter on deletedAt: null
+  deletedAt         DateTime? @map("deleted_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  uploadedById String? @map("uploaded_by")
+  uploadedBy   User?   @relation("TransactionUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  prediction Prediction?
+  fraudLabel FraudLabel?
+  cases      Case[]
+
+  @@index([txnTimestamp])
+  @@index([deletedAt])
+  @@index([senderId])
+  @@map("transactions")
+}
+
+model Prediction {
+  id                   String   @id @default(uuid())
+  transactionId        String   @unique @map("transaction_id")
+  riskScore            Float    @map("risk_score")
+  riskLevel            String   @map("risk_level")
+  explanationSummary   String?  @map("explanation_summary")
+  featureContributions Json?    @map("feature_contributions")
+  modelVersion         String   @map("model_version")
+  latencyMs            Int?     @map("latency_ms")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  batchJobId String?   @map("batch_job_id")
+  batchJob   BatchJob? @relation(fields: [batchJobId], references: [id], onDelete: SetNull)
+
+  @@index([riskLevel])
+  @@index([batchJobId])
+  @@map("predictions")
+}
+
+model Case {
+  id            String     @id @default(uuid())
+  transactionId String     @map("transaction_id")
+  status        CaseStatus @default(UNDER_REVIEW)
+  notes         String?
+  resolvedAt    DateTime?  @map("resolved_at")
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  assignedToId String? @map("assigned_to")
+  assignedTo   User?   @relation("CaseAssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([assignedToId])
+  @@map("cases")
+}
+
+model BatchJob {
+  id             String         @id @default(uuid())
+  name           String
+  status         BatchJobStatus @default(QUEUED)
+  totalTxns      Int            @default(0) @map("total_txns")
+  processedCount Int            @default(0) @map("processed_count")
+  failedCount    Int            @default(0) @map("failed_count")
+
+  // Completion is detected by comparing these two rather than by polling the
+  // queue. Chunks finish concurrently, so completedChunks is only ever moved
+  // with an atomic increment; the single worker whose increment brings it level
+  // with totalChunks is the one that finalises the job.
+  totalChunks     Int @default(0) @map("total_chunks")
+  completedChunks Int @default(0) @map("completed_chunks")
+
+  // The transactions this job was created to score.
+  //
+  // Retry needs this: a transaction that failed leaves no Prediction behind, so
+  // there is nothing to find it by afterwards. Without the original roster, a
+  // retry could only re-run the rows that already succeeded — precisely the
+  // ones that do not need it.
+  transactionIds String[] @map("transaction_ids")
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  createdById String? @map("created_by")
+  createdBy   User?   @relation("BatchJobCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  predictions Prediction[]
+
+  @@index([status])
+  @@map("batch_jobs")
+}
+
+/// Ground-truth fraud labels shipped with the source dataset (PaySim).
+///
+/// Deliberately kept out of Transaction. These labels are what the platform is
+/// trying to predict, so storing them on the transaction row would let them leak
+/// into a feature set and quietly train a model on the answer. Isolating them
+/// here keeps the transaction record honest while still allowing an evaluation
+/// query to join predictions against truth and compute precision/recall.
+///
+/// Written only by prisma/seedTransactions.js — no API route touches this table.
+model FraudLabel {
+  id             String   @id @default(uuid())
+  txnId          String   @unique @map("txn_id")
+  isFraud        Boolean  @map("is_fraud")
+  isFlaggedFraud Boolean  @map("is_flagged_fraud")
+  source         String   @default("PAYSIM")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  transaction Transaction @relation(fields: [txnId], references: [txnId], onDelete: Cascade)
+
+  @@index([isFraud])
+  @@map("fraud_labels")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  userId       String?  @map("user_id")
+  action       String
+  resourceType String?  @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  ipAddress    String?  @map("ip_address")
+  metadata     Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([action])
+  @@map("audit_logs")
+}

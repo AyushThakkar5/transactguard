@@ -1,0 +1,54 @@
+# TransactGuard — local infrastructure.
+#
+# Postgres and Redis only. The API runs on the host during development
+# (`cd backend && npm run dev`) so restarts are instant and the debugger
+# attaches without extra plumbing. The ML service and a containerised API
+# join this file at a later step.
+
+name: transactguard
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: transactguard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: transactguard
+      POSTGRES_PASSWORD: transactguard
+      POSTGRES_DB: transactguard
+    ports:
+      # Bound to 127.0.0.1 rather than 0.0.0.0 so the database is not exposed
+      # to other machines on the network.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U transactguard -d transactguard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: transactguard-redis
+    restart: unless-stopped
+    # appendonly yes survives a container restart with the token denylist and
+    # rate-limit counters intact.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  postgres_data:
+    name: transactguard_postgres_data
+  redis_data:
+    name: transactguard_redis_data

@@ -1,0 +1,47 @@
+{
+  "name": "transactguard-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TransactGuard API \u2014 auth, database and cache layer for the real-time payment fraud detection platform",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "worker": "node src/workers/batchScoring.worker.js",
+    "worker:dev": "node --watch src/workers/batchScoring.worker.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:reset": "prisma migrate reset",
+    "db:seed": "prisma db seed",
+    "db:seed:txns": "node prisma/seedTransactions.js",
+    "db:studio": "prisma studio",
+    "socket:test": "node scripts/socketTestClient.js"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "bcrypt": "^6.0.0",
+    "bullmq": "^6.1.2",
+    "cors": "^2.8.6",
+    "csv-parse": "^7.0.2",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "helmet": "^8.3.0",
+    "ioredis": "^6.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.2.0",
+    "pino": "^10.3.1",
+    "socket.io": "^4.8.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "pino-pretty": "^13.1.3",
+    "prisma": "^7.9.1",
+    "socket.io-client": "^4.8.3"
+  }
+}

@@ -1,0 +1,13 @@
+# TransactGuard ML service — pinned dependencies.
+# Install into a virtualenv: pip install -r requirements.txt
+
+fastapi==0.141.1
+
+# [standard] pulls in watchfiles (needed by --reload), uvloop and httptools.
+uvicorn[standard]==0.52.3
+
+pydantic==2.13.4
+
+# Loads and validates .env in app/core/config.py.
+pydantic-settings==2.15.0
+python-dotenv==1.2.3

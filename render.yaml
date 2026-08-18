@@ -1,0 +1,108 @@
+# Render Blueprint — three services from one repository.
+#
+# Import this from the Render dashboard (New → Blueprint) and point it at the
+# GitHub repo. Every value below is safe to commit; secrets are declared with
+# `sync: false`, which tells Render to prompt for them rather than read them
+# from here.
+#
+# The three services and why they are separate:
+#   transactguard-api     the Express gateway the browser talks to
+#   transactguard-worker  the BullMQ consumer — a background worker, not a web
+#                         service, because scoring 20,000 rows must not compete
+#                         with request handling for the same event loop
+#   transactguard-ml      the FastAPI scorer, reached only server-to-server
+#
+# Postgres and Redis are NOT declared here: the free tiers of Supabase and
+# Upstash outlast Render's, and both are supplied as connection strings.
+
+services:
+  # ---------------------------------------------------------------- API -----
+  - type: web
+    name: transactguard-api
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: npm ci && npx prisma generate
+    startCommand: node src/server.js
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT; server.js reads it through config/env.js.
+      - key: DATABASE_URL          # Supabase → Settings → Database → Connection string (URI)
+        sync: false
+      - key: REDIS_URL             # Upstash → Database → Redis Connect → rediss://…
+        sync: false
+      - key: JWT_SECRET            # node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+        sync: false
+      - key: JWT_REFRESH_SECRET    # must differ from JWT_SECRET — the app refuses to start otherwise
+        sync: false
+      - key: ML_SERVICE_API_KEY    # must equal INTERNAL_API_KEY on transactguard-ml
+        sync: false
+      - key: ADMIN_SEED_PASSWORD   # required by the seed when NODE_ENV=production
+        sync: false
+      - key: ANALYST_SEED_PASSWORD
+        sync: false
+      - key: ALLOWED_ORIGIN        # e.g. https://transactguard.vercel.app — the API refuses
+        sync: false                # to start in production without it
+      - key: ML_SERVICE_URL
+        fromService:
+          name: transactguard-ml
+          type: web
+          property: hostport
+
+  # ------------------------------------------------------------- WORKER -----
+  - type: worker
+    name: transactguard-worker
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: npm ci && npx prisma generate
+    startCommand: node src/workers/batchScoring.worker.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # The worker shares the API's database, queue and model access. It needs
+      # the JWT secrets only because config/env.js validates the whole schema at
+      # startup — it never issues or verifies a token itself.
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: ML_SERVICE_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGIN
+        sync: false
+      - key: ML_SERVICE_URL
+        fromService:
+          name: transactguard-ml
+          type: web
+          property: hostport
+
+  # --------------------------------------------------------- ML SERVICE -----
+  - type: web
+    name: transactguard-ml
+    runtime: python
+    plan: free
+    region: oregon
+    rootDir: ml_service
+    buildCommand: pip install -r requirements.txt
+    # $PORT is assigned by Render; binding 0.0.0.0 is required for its proxy to
+    # reach the process.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    # No healthCheckPath: /health requires the internal API key, and Render's
+    # prober cannot send a header. Render falls back to a TCP port check.
+    envVars:
+      - key: ENV
+        value: production
+      - key: INTERNAL_API_KEY      # must equal ML_SERVICE_API_KEY on the API and worker
+        sync: false

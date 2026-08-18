@@ -1,0 +1,192 @@
+@import 'tailwindcss';
+
+/*
+  Design tokens — dark command centre.
+
+  Declared with the exact names from the spec, then mapped into Tailwind's theme
+  with `@theme inline` so `bg-void` and `var(--void)` are the same value and
+  neither can drift from the other.
+*/
+:root {
+  --void: #0a0b0f;
+  --surface: #14161d;
+  --surface-raised: #1c1f29;
+  --hairline: #2a2e3a;
+  --text: #e8e9ed;
+  --text-dim: #8b909e;
+
+  --clear: #34d399;
+  --clear-glow: 0 0 20px rgba(52, 211, 153, 0.35);
+  --suspicious: #fbbf24;
+  --suspicious-glow: 0 0 20px rgba(251, 191, 36, 0.35);
+  --critical: #f43f5e;
+  --critical-glow: 0 0 24px rgba(244, 63, 94, 0.45);
+
+  --accent: #6366f1;
+  --accent-glow: 0 0 20px rgba(99, 102, 241, 0.4);
+
+  --radius-card: 6px;
+  --radius-control: 4px;
+}
+
+@theme inline {
+  --color-void: var(--void);
+  --color-surface: var(--surface);
+  --color-raised: var(--surface-raised);
+  --color-hairline: var(--hairline);
+  --color-text: var(--text);
+  --color-dim: var(--text-dim);
+  --color-clear: var(--clear);
+  --color-suspicious: var(--suspicious);
+  --color-critical: var(--critical);
+  --color-accent: var(--accent);
+
+  --font-display: 'Fraunces', ui-serif, Georgia, serif;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--void);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* Every number in the product, tabular so columns align digit for digit. */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+
+  /*
+    Fraunces on near-black would otherwise sit flat. A tight text-shadow lifts it
+    off the ground without reading as a glow effect in its own right.
+  */
+  .display {
+    font-family: var(--font-display);
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    text-shadow: 0 0 24px rgba(232, 233, 237, 0.16);
+  }
+
+  /* Focus is restyled, never removed — and now carries the accent glow. */
+  :focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+    box-shadow: var(--accent-glow);
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: var(--text);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--void);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--hairline);
+    border-radius: 5px;
+    border: 2px solid var(--void);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--surface-raised);
+  }
+}
+
+@layer utilities {
+  .label-caps {
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    font-size: 10px;
+    font-weight: 500;
+  }
+
+  /* Interactive lift: glow plus a 2% scale, applied to anything clickable. */
+  .lift {
+    transition:
+      transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 160ms ease,
+      border-color 160ms ease,
+      background-color 160ms ease,
+      color 160ms ease;
+  }
+  .lift:hover:not(:disabled) {
+    transform: scale(1.02);
+    box-shadow: var(--accent-glow);
+    border-color: var(--accent);
+  }
+  .lift:active:not(:disabled) {
+    transform: scale(0.99);
+  }
+
+  /*
+    A card that represents a CRITICAL item radiates, rather than only carrying a
+    coloured badge — the row itself should read as hot at a glance.
+  */
+  .glow-critical { box-shadow: var(--critical-glow); }
+  .glow-suspicious { box-shadow: var(--suspicious-glow); }
+  .glow-clear { box-shadow: var(--clear-glow); }
+  .glow-accent { box-shadow: var(--accent-glow); }
+
+  /* Slow breathing on the glow radius. Never a strobe. */
+  @keyframes breathe {
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 1; }
+  }
+  .breathe { animation: breathe 3.2s ease-in-out infinite; }
+
+  @keyframes grid-drift {
+    from { transform: translate3d(0, 0, 0); }
+    to { transform: translate3d(0, 44px, 0); }
+  }
+
+  @keyframes sweep-line {
+    0% { transform: translate3d(0, -100%, 0); opacity: 0; }
+    12% { opacity: 1; }
+    88% { opacity: 1; }
+    100% { transform: translate3d(0, 100vh, 0); opacity: 0; }
+  }
+
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface) 0%, var(--surface-raised) 50%, var(--surface) 100%);
+    background-size: 200% 100%;
+    animation: skeleton-sweep 1.5s ease-in-out infinite;
+  }
+  @keyframes skeleton-sweep {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+}
+
+/*
+  Motion is a courtesy. Everything ambient, pulsing or counting stops; values
+  land at their final state immediately rather than animating there.
+*/
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .lift:hover:not(:disabled) { transform: none; }
+  .skeleton { animation: none; background: var(--surface-raised); }
+  .breathe { animation: none; opacity: 1; }
+}

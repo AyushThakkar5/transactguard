@@ -1,0 +1,77 @@
+# ─── Secrets ──────────────────────────────────────────────────────────────────
+# Every .env at any depth. Only *.example files are tracked.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+secrets.json
+
+# ─── Node ─────────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+*.tgz
+.eslintcache
+
+# ─── Build output ─────────────────────────────────────────────────────────────
+dist/
+build/
+.next/
+.vite/
+**/node_modules/.vite/
+*.tsbuildinfo
+
+# ─── Python / ML service ──────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ─── Prisma ───────────────────────────────────────────────────────────────────
+# Migrations ARE committed — they are the schema's history. Only generated
+# client output is ignored.
+backend/prisma/generated/
+backend/src/generated/
+
+# ─── Datasets ─────────────────────────────────────────────────────────────────
+# PaySim is ~493 MB. Download it from Kaggle rather than committing it:
+# https://www.kaggle.com/datasets/ealaxi/paysim1
+backend/prisma/data/*.csv
+*.csv.gz
+*.parquet
+
+# ─── Runtime ──────────────────────────────────────────────────────────────────
+logs/
+*.log
+*.pid
+coverage/
+.nyc_output/
+tmp/
+.cache/
+
+# ─── Editors / OS ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
