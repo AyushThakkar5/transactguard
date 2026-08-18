@@ -1,6 +1,6 @@
 # Deployment
 
-Deploying TransactGuard to free tiers: **Supabase** (Postgres), **Upstash** (Redis), **Render** (API, worker, ML service), **Vercel** (frontend).
+Deploying TransactGuard to free tiers: **Supabase** (Postgres), **Upstash** (Redis), **Render** (API, ML service), **Vercel** (frontend).
 
 Work top to bottom — each step produces a value the next one needs. Budget about 40 minutes the first time.
 
@@ -87,12 +87,14 @@ BullMQ needs `maxRetriesPerRequest: null`, which this codebase already sets. Ups
 
 ---
 
-## 4 · Render — three services
+## 4 · Render — two services
 
-`render.yaml` at the repo root defines all three. Use the Blueprint flow rather than creating them by hand.
+`render.yaml` at the repo root defines both. Use the Blueprint flow rather than creating them by hand.
+
+> **Where did the worker go?** Render's free plan has no Background Worker service type — trying to create one fails with *"service type is not available for this plan"*. So the API sets `RUN_WORKER_INLINE=true` and starts the same BullMQ consumer inside its own process, at concurrency 2 instead of 5 so a running batch cannot starve request handling. Nothing else changes: jobs are still enqueued over Redis and progress still streams back over Redis pub/sub, so splitting the worker back out on a paid plan is a config change, not a rewrite. Locally it stays a separate process — see [Local development](#local-development-is-unaffected).
 
 1. **New → Blueprint** → connect your GitHub account → pick the repo.
-2. Render reads `render.yaml` and proposes **transactguard-api**, **transactguard-worker**, **transactguard-ml**.
+2. Render reads `render.yaml` and proposes **transactguard-api** and **transactguard-ml**.
 3. It prompts for every `sync: false` variable. Fill them in:
 
 **transactguard-ml** — deploy this one first, the others reference it:
@@ -114,7 +116,7 @@ BullMQ needs `maxRetriesPerRequest: null`, which this codebase already sets. Ups
 | `ANALYST_SEED_PASSWORD` | chosen |
 | `ALLOWED_ORIGIN` | *leave blank for now — step 6 fills it* |
 
-**transactguard-worker** — the same values as the API, minus `ALLOWED_ORIGIN` (set it to anything; the worker validates the schema but never serves a browser).
+`RUN_WORKER_INLINE=true` is already set in `render.yaml` — Render will not prompt for it.
 
 4. **Apply**. First build takes ~5 minutes.
 
@@ -172,7 +174,7 @@ Then score them from the deployed app: sign in as admin → **Batch jobs → New
 ALLOWED_ORIGIN = https://transactguard.vercel.app
 ```
 
-Save. Render redeploys, and the API starts. Do the same on **transactguard-worker** if you left it blank.
+Save. Render redeploys, and the API starts.
 
 > `VITE_API_URL` is baked in at **build** time, not read at runtime. Change it and you must redeploy the frontend.
 
@@ -204,17 +206,36 @@ Checklist:
 
 **Render spins services down after 15 minutes idle.** The first request wakes them and takes up to ~50 seconds. The frontend shows a "Waking up the server" notice after 2.5 seconds so a visitor is not left staring at a spinner — but the demo is best shared with a heads-up, or warmed by loading it a minute beforehand.
 
-**Three services, three cold starts.** The API wakes on the first request, but the ML service only wakes when the API first calls it — so the *first* scoring action can be slow even after the app appears loaded.
+**Two services, two cold starts.** The API wakes on the first request, but the ML service only wakes when the API first calls it — so the *first* scoring action can be slow even after the app appears loaded.
+
+**A sleeping API is a paused queue.** With the worker inline, nothing consumes the queue while the service is spun down. Jobs are not lost — they sit in Redis and drain as soon as the next request wakes the API — but a batch queued from a browser tab you then walk away from will not finish in the background the way it would with a dedicated worker.
 
 **Supabase pauses a project after 7 days of inactivity.** Open the dashboard to resume it. Worth loading the app once a week if it is on your CV.
 
 **Upstash allows 10,000 commands/day.** Rate limiting and the token denylist are a handful per request; a large batch job is the thing that could approach it.
 
-**A cron ping keeps it warm.** A free [cron-job.org](https://cron-job.org) hit on `/api/v1/health` every 10 minutes largely eliminates cold starts, at the cost of using more of Render's 750 free instance-hours per month. With three services that budget is tight — consider pinging only the API.
+**A cron ping keeps it warm.** A free [cron-job.org](https://cron-job.org) hit on `/api/v1/health` every 10 minutes largely eliminates cold starts, at the cost of using more of Render's 750 free instance-hours per month. Ping only the API — that also keeps the inline worker consuming.
+
+---
+
+## Local development is unaffected
+
+Inline mode is opt-in and off by default (`RUN_WORKER_INLINE=false` in `backend/.env.example`). Locally the worker still runs as its own process, exactly as before:
+
+```bash
+npm run dev      # API only — no worker in-process
+npm run worker   # the BullMQ consumer, separate process, concurrency 5
+```
+
+`./dev.sh` still starts them separately too. Both arrangements were verified end to end against Postgres, Redis and the ML service — a 250-transaction / 3-chunk job drains to `COMPLETED 250/250` either way, at concurrency 2 inline and 5 standalone.
 
 ---
 
 ## Troubleshooting
+
+**Blueprint fails: `service type is not available for this plan`** — you are on an old `render.yaml` that still declares `type: worker`. Pull the latest; the worker now runs inside the API.
+
+**Build fails: `prisma: not found` / `npx` tries to download prisma** — `NODE_ENV=production` makes npm set `omit=dev`, so `npm ci` skips devDependencies. The Prisma CLI is needed by the build, so it lives in `dependencies`, not `devDependencies`. If you moved it, move it back.
 
 **API deploy fails: `ALLOWED_ORIGIN is not set`** — expected before step 6. Set it to your Vercel URL.
 

@@ -1,7 +1,21 @@
 /**
- * Batch scoring worker — its own process.
+ * Batch scoring worker.
  *
- *   npm run worker
+ * Runs in one of two modes:
+ *
+ *   STANDALONE (local development, and any host that offers background
+ *   workers) — `npm run worker`. Its own process, its own CPU, scoring a
+ *   20,000-row job without competing with request handling.
+ *
+ *   INLINE (RUN_WORKER_INLINE=true) — started by server.js inside the API
+ *   process after app.listen(). Render's free tier has no Background Worker
+ *   service type, so on free hosting this is the only way to consume the queue
+ *   at all. It is opt-in precisely because it is the compromise: the same event
+ *   loop now serves HTTP and scores transactions, so concurrency is reduced to
+ *   keep the API responsive.
+ *
+ * Either way the processing logic below is identical — only who owns the
+ * process differs.
  *
  * Consumes the "batch-scoring" queue. Each queue job is a chunk of up to 100
  * transaction ids; the worker scores them one by one through the SAME
@@ -14,6 +28,8 @@
  */
 
 import { Worker } from 'bullmq'
+import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 import {
   BATCH_SCORING_QUEUE,
   WORKER_CONCURRENCY,
@@ -31,6 +47,15 @@ import {
 import { logger, moduleLogger } from '../utils/logger.js'
 
 const log = moduleLogger('worker')
+
+/**
+ * Chunks processed in parallel when sharing the API's process.
+ *
+ * Lower than the standalone figure on purpose: inline mode means one event loop
+ * is doing both jobs, and a batch that saturates it makes the whole dashboard
+ * feel dead.
+ */
+const INLINE_CONCURRENCY = 2
 
 /**
  * Errors that mean "the model is unreachable", not "this row is bad".
@@ -120,25 +145,64 @@ async function processChunk(job) {
   return { processed, failed }
 }
 
-// Warm the pub/sub connection before the first chunk lands, so the opening
-// progress events of a job are not dropped during the Redis handshake.
-await initPublisher()
+let worker = null
+let connection = null
 
-const connection = createQueueConnection()
+/**
+ * Build and start the queue consumer.
+ *
+ * Idempotent: calling it twice returns the existing worker rather than opening
+ * a second consumer on the same queue.
+ *
+ * @param {object} [options]
+ * @param {number} [options.concurrency] chunks processed in parallel
+ * @param {boolean} [options.inline] true when sharing the API's process
+ */
+export async function startBatchWorker({ concurrency, inline = false } = {}) {
+  if (worker) return worker
 
-const worker = new Worker(BATCH_SCORING_QUEUE, processChunk, {
-  connection,
-  concurrency: WORKER_CONCURRENCY,
-})
+  // Warm the pub/sub connection before the first chunk lands, so the opening
+  // progress events of a job are not dropped during the Redis handshake.
+  await initPublisher()
 
-worker.on('ready', () =>
-  log.info(
-    { queue: BATCH_SCORING_QUEUE, concurrency: WORKER_CONCURRENCY },
-    'Batch scoring worker ready',
-  ),
-)
+  connection = createQueueConnection()
 
-worker.on('error', (err) => log.error({ err: err.message }, 'Worker error'))
+  // Inline runs at reduced concurrency. Five chunks scoring in parallel inside
+  // the API process would starve request handling on a single free-tier
+  // instance; two keeps the queue moving without the dashboard going cold.
+  const effective = concurrency ?? (inline ? INLINE_CONCURRENCY : WORKER_CONCURRENCY)
+
+  worker = new Worker(BATCH_SCORING_QUEUE, processChunk, {
+    connection,
+    concurrency: effective,
+  })
+
+  worker.on('ready', () =>
+    log.info(
+      { queue: BATCH_SCORING_QUEUE, concurrency: effective, mode: inline ? 'inline' : 'standalone' },
+      'Batch scoring worker ready',
+    ),
+  )
+
+  worker.on('error', (err) => log.error({ err: err.message }, 'Worker error'))
+
+  attachFailureHandler(worker)
+
+  return worker
+}
+
+/** Close the consumer and its Redis connection. Safe to call when not started. */
+export async function stopBatchWorker() {
+  if (!worker) return
+  const w = worker
+  const c = connection
+  worker = null
+  connection = null
+  // `close()` waits for in-flight chunks rather than dropping them mid-write.
+  await w.close().catch(() => {})
+  await c?.quit().catch(() => {})
+  log.info('Batch scoring worker stopped')
+}
 
 /**
  * Fires after every failed attempt, not just the last.
@@ -148,7 +212,8 @@ worker.on('error', (err) => log.error({ err: err.message }, 'Worker error'))
  * the job would sit in PROCESSING forever, which is exactly the "stuck job"
  * failure this step has to avoid.
  */
-worker.on('failed', async (job, err) => {
+function attachFailureHandler(worker) {
+  worker.on('failed', async (job, err) => {
   if (!job) return
 
   const attemptsAllowed = job.opts?.attempts ?? 1
@@ -190,14 +255,24 @@ worker.on('failed', async (job, err) => {
       },
       'Chunk exhausted its retries',
     )
-  } catch (bookkeepingErr) {
-    // If this throws the job really would hang, so it is logged at fatal.
-    log.fatal(
-      { jobId: batchJobId, err: bookkeepingErr.message },
-      'Failed to record a terminal chunk failure — job may not reach a terminal status',
-    )
-  }
-})
+    } catch (bookkeepingErr) {
+      // If this throws the job really would hang, so it is logged at fatal.
+      log.fatal(
+        { jobId: batchJobId, err: bookkeepingErr.message },
+        'Failed to record a terminal chunk failure — job may not reach a terminal status',
+      )
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Standalone entrypoint — only when this file is the process's main module.
+// Importing it (as server.js does for inline mode) must not start anything or
+// install signal handlers.
+// ---------------------------------------------------------------------------
+
+const isMainModule =
+  process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])
 
 let shuttingDown = false
 
@@ -207,10 +282,8 @@ async function shutdown(signal) {
   log.info({ signal }, 'Worker shutting down')
 
   try {
-    // `true` waits for in-flight chunks rather than dropping them mid-write.
-    await worker.close()
+    await stopBatchWorker()
     await closePublisher()
-    await connection.quit()
     await disconnectDatabase()
     log.info('Worker shutdown complete')
     process.exit(0)
@@ -220,16 +293,18 @@ async function shutdown(signal) {
   }
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'))
-process.on('SIGTERM', () => shutdown('SIGTERM'))
+if (isMainModule) {
+  await startBatchWorker()
 
-process.on('unhandledRejection', (reason) =>
-  logger.error({ reason: reason?.message ?? reason }, 'Unhandled rejection in worker'),
-)
+  process.on('SIGINT', () => shutdown('SIGINT'))
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
 
-process.on('uncaughtException', (err) => {
-  logger.fatal({ err: err.message, stack: err.stack }, 'Uncaught exception in worker')
-  process.exit(1)
-})
+  process.on('unhandledRejection', (reason) =>
+    logger.error({ reason: reason?.message ?? reason }, 'Unhandled rejection in worker'),
+  )
 
-export { worker }
+  process.on('uncaughtException', (err) => {
+    logger.fatal({ err: err.message, stack: err.stack }, 'Uncaught exception in worker')
+    process.exit(1)
+  })
+}

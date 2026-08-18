@@ -15,6 +15,7 @@ import { closeSocketServer, initSocketServer } from './config/socket.js'
 import { startSubscriber, stopSubscriber } from './realtime/subscriber.js'
 import { closePublisher, initPublisher } from './realtime/publisher.js'
 import { shutdownSimulator } from './modules/simulator/simulator.service.js'
+import { startBatchWorker, stopBatchWorker } from './workers/batchScoring.worker.js'
 
 const server = app.listen(env.PORT, () => {
   logger.info(
@@ -40,6 +41,31 @@ startSubscriber(io).catch((err) =>
     'Realtime subscriber failed to start — batch jobs still run, but progress will not stream',
   ),
 )
+
+/**
+ * Inline batch worker.
+ *
+ * Started after app.listen() so the HTTP server is already accepting requests —
+ * a slow Redis handshake then delays queue consumption, never the port binding,
+ * and a health check answers immediately either way.
+ *
+ * A failure here is logged but never fatal: an API that serves every read and
+ * cannot drain the queue is far more useful than one that refuses to start.
+ */
+if (env.RUN_WORKER_INLINE) {
+  startBatchWorker({ inline: true })
+    .then(() =>
+      logger.info(
+        'Batch worker running inline — no separate worker process needed on this host',
+      ),
+    )
+    .catch((err) =>
+      logger.error(
+        { err: err.message },
+        'Inline batch worker failed to start — the API is serving, but queued jobs will not be processed',
+      ),
+    )
+}
 
 /**
  * Probe Postgres and Redis at boot.
@@ -78,6 +104,9 @@ async function shutdown(signal) {
   server.close(async () => {
     try {
       await closeSocketServer()
+      // Closed before the database goes: an in-flight chunk still needs to
+      // write its counters.
+      await stopBatchWorker()
       await Promise.allSettled([
         stopSubscriber(),
         closePublisher(),

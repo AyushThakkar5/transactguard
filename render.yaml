@@ -1,16 +1,24 @@
-# Render Blueprint — three services from one repository.
+# Render Blueprint — two services from one repository.
 #
 # Import this from the Render dashboard (New → Blueprint) and point it at the
 # GitHub repo. Every value below is safe to commit; secrets are declared with
 # `sync: false`, which tells Render to prompt for them rather than read them
 # from here.
 #
-# The three services and why they are separate:
-#   transactguard-api     the Express gateway the browser talks to
-#   transactguard-worker  the BullMQ consumer — a background worker, not a web
-#                         service, because scoring 20,000 rows must not compete
-#                         with request handling for the same event loop
-#   transactguard-ml      the FastAPI scorer, reached only server-to-server
+# The two services:
+#   transactguard-api  the Express gateway the browser talks to, which on this
+#                      plan also hosts the BullMQ consumer in-process
+#   transactguard-ml   the FastAPI scorer, reached only server-to-server
+#
+# WHY THE WORKER IS NOT A THIRD SERVICE
+# Architecturally it should be: scoring 20,000 rows should not compete with
+# request handling for the same event loop. Render's free plan has no
+# Background Worker type, so RUN_WORKER_INLINE=true starts the same BullMQ
+# consumer inside the API process instead, at concurrency 2 rather than 5 to
+# leave headroom for requests. Nothing about the queue changes — jobs are still
+# enqueued over Redis and progress still travels back over Redis pub/sub, so
+# moving the worker back out is a config change, not a rewrite. Locally it is
+# still its own process via `npm run worker`; inline mode is opt-in.
 #
 # Postgres and Redis are NOT declared here: the free tiers of Supabase and
 # Upstash outlast Render's, and both are supplied as connection strings.
@@ -31,6 +39,8 @@ services:
       - key: NODE_ENV
         value: production
       # Render injects PORT; server.js reads it through config/env.js.
+      - key: RUN_WORKER_INLINE     # no Background Worker service type on the free plan —
+        value: 'true'              # server.js starts the BullMQ consumer after app.listen()
       - key: DATABASE_URL          # Supabase → Settings → Database → Connection string (URI)
         sync: false
       - key: REDIS_URL             # Upstash → Database → Redis Connect → rediss://…
@@ -47,40 +57,6 @@ services:
         sync: false
       - key: ALLOWED_ORIGIN        # e.g. https://transactguard.vercel.app — the API refuses
         sync: false                # to start in production without it
-      - key: ML_SERVICE_URL
-        fromService:
-          name: transactguard-ml
-          type: web
-          property: hostport
-
-  # ------------------------------------------------------------- WORKER -----
-  - type: worker
-    name: transactguard-worker
-    runtime: node
-    plan: free
-    region: oregon
-    rootDir: backend
-    buildCommand: npm ci && npx prisma generate
-    startCommand: node src/workers/batchScoring.worker.js
-    autoDeploy: true
-    envVars:
-      - key: NODE_ENV
-        value: production
-      # The worker shares the API's database, queue and model access. It needs
-      # the JWT secrets only because config/env.js validates the whole schema at
-      # startup — it never issues or verifies a token itself.
-      - key: DATABASE_URL
-        sync: false
-      - key: REDIS_URL
-        sync: false
-      - key: JWT_SECRET
-        sync: false
-      - key: JWT_REFRESH_SECRET
-        sync: false
-      - key: ML_SERVICE_API_KEY
-        sync: false
-      - key: ALLOWED_ORIGIN
-        sync: false
       - key: ML_SERVICE_URL
         fromService:
           name: transactguard-ml
@@ -104,5 +80,5 @@ services:
     envVars:
       - key: ENV
         value: production
-      - key: INTERNAL_API_KEY      # must equal ML_SERVICE_API_KEY on the API and worker
+      - key: INTERNAL_API_KEY      # must equal ML_SERVICE_API_KEY on the API
         sync: false

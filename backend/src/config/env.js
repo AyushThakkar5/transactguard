@@ -48,6 +48,19 @@ const envSchema = z.object({
    */
   ALLOWED_ORIGIN: z.string().default(''),
 
+  /**
+   * Run the BullMQ consumer inside this process instead of a separate one.
+   *
+   * Off by default, because a dedicated worker process is the better design —
+   * scoring a large batch does not then compete with request handling. It
+   * exists because Render's free tier offers no Background Worker service type,
+   * so on free hosting this is the only way to consume the queue at all.
+   */
+  RUN_WORKER_INLINE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
   PORT: z.coerce.number().int().positive().max(65535).default(4000),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 })

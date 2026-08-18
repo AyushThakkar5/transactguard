@@ -62,6 +62,8 @@ TransactGuard is built around that gap. A score on its own is not actionable, so
 
 **Why Socket.IO.** The worker runs as a *separate OS process* from the server holding the browser connections — it has no socket to emit on. So it publishes progress to Redis, and the API process subscribes and re-broadcasts to the room watching that job. Clients join a room per job rather than receiving a global broadcast, so a 60-chunk run does not spray sixty messages at every connected browser.
 
+That indirection is what makes the deployment flexible. Render's free plan has no Background Worker type, so the hosted build sets `RUN_WORKER_INLINE=true` and runs the consumer inside the API process at concurrency 2. Because progress already travels over Redis rather than a shared object, neither the worker nor the frontend needed a single change to move — and moving back out on a paid plan is one environment variable.
+
 **Why XGBoost (next).** The scorer today is a deterministic rule engine — five weighted factors, fully explainable, and a stand-in with the same request and response contract the real model will use. Swapping it means changing one file. See [Model performance](#model-performance) for why the rules are not good enough on their own.
 
 ---
@@ -233,7 +235,7 @@ transactguard/
 │       └── models/   fraud_engine.py — the swap point for XGBoost
 ├── frontend/         React + Vite SPA
 ├── docker-compose.yml
-├── render.yaml       Render blueprint: API, worker, ML service
+├── render.yaml       Render blueprint: API (worker inline), ML service
 ├── dev.sh            one-command local startup
 └── DEPLOYMENT.md     step-by-step free-tier deployment
 ```
