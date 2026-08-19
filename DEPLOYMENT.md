@@ -204,7 +204,7 @@ unset MIGRATE_URL
 
 1. **Add New → Project** → import the repo.
 2. **Root Directory: `frontend`** ← easy to miss, and nothing works without it.
-3. Framework preset: **Vite** (auto-detected). Build and output settings come from `frontend/vercel.json`.
+3. Framework preset: **Vite** (auto-detected). Build and output settings come from `frontend/vercel.json` — see [What `vercel.json` does](#what-verceljson-does) below for why each rule is there.
 4. **Environment Variables:**
 
 | Name | Value |
@@ -222,6 +222,14 @@ ALLOWED_ORIGIN = https://<your-actual-vercel-url>
 Save; Render redeploys. If you guessed right in step 4, there is nothing to do here.
 
 > `VITE_API_URL` is baked in at **build** time, not read at runtime. Change it and you must redeploy the frontend.
+
+### What `vercel.json` does
+
+JSON has no comment syntax, and Vercel validates the file against a strict schema that rejects unknown keys — including the `"//"` key people use as a stand-in for one. So the reasoning lives here instead of in the file.
+
+**`rewrites` — the SPA fallback.** React Router owns `/transactions`, `/cases` and the rest client-side. Vercel only has `index.html` on disk, so without this rule a refresh or a pasted deep link asks for a file that does not exist and gets a 404. The `(?!api/)` negative lookahead keeps `/api/*` from being swallowed by the fallback.
+
+**`headers` — caching and hardening.** Vite fingerprints filenames under `/assets/`, so a given URL's contents can never change and it is safe to cache for a year as `immutable`. Everything else gets `nosniff`, `DENY` framing, and a `strict-origin-when-cross-origin` referrer policy.
 
 ---
 
